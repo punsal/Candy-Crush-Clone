@@ -97,3 +97,12 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+## OS & Editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Rider / JetBrains
+.idea/
+*.sln.iml
