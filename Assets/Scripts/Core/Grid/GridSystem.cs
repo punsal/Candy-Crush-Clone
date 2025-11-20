@@ -35,6 +35,7 @@ namespace Core.Grid
                 {
                     ICell cell = Object.Instantiate(_cellPrefab, new Vector3(j, -i, 0), Quaternion.identity);
                     cell.Initialize(i, j);
+                    cell.Name = $"Cell_{i}_{j}";
                     Cells[i, j] = cell;
                 }
             }
