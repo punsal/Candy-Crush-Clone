@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Linq;
 using Core.Grid.Abstract;
+using Core.Random.Abstract;
 using Core.Runner.Interface;
 using Gameplay.Systems.Shuffle.Abstract;
 using Gameplay.Tile.Abstract;
@@ -14,13 +15,16 @@ namespace Gameplay.Systems.Shuffle
     /// </summary>
     public class ShuffleSystem : ShuffleSystemBase
     {
+        private readonly RandomSystemBase _randomSystem;
+        
         public ShuffleSystem(
             GridSystemBase gridSystem, 
             TileManagerBase tileManager,
-            ICoroutineRunner coroutineRunner) 
+            ICoroutineRunner coroutineRunner,
+            RandomSystemBase randomSystem) 
             : base(gridSystem, tileManager, coroutineRunner)
         {
-            // empty
+            _randomSystem = randomSystem;
         }
 
         protected override IEnumerator Shuffle()
@@ -64,7 +68,7 @@ namespace Gameplay.Systems.Shuffle
                 GridSystem.RemoveOccupant(tile);
             }
 
-            var shuffledTiles = originalTiles.OrderBy(x => Random.value).ToList();
+            var shuffledTiles = originalTiles.OrderBy(x => _randomSystem.FloatValue).ToList();
 
             for (var i = 0; i < tiles.Count; i++)
             {
