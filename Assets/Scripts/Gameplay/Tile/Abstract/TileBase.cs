@@ -49,7 +49,12 @@ namespace Gameplay.Tile.Abstract
         
         public void MoveTo(Vector3 position, float duration)
         {
-            animator.AnimateMovement(position, duration);
+            animator?.AnimateMovement(position, duration);
+        }
+        
+        public void ResetState()
+        {
+            animator?.ResetState();
         }
     }
 }

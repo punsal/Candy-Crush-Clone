@@ -48,6 +48,15 @@ namespace Gameplay.Tile.Components
             _currentAnimation = StartCoroutine(MoveAnimation(target, moveDuration));
         }
 
+        public override void ResetState()
+        {
+            StopCurrentAnimation();
+
+            transform.localScale = _originalScale != Vector3.zero 
+                ? _originalScale 
+                : Vector3.one;
+        }
+
         private IEnumerator ScaleDownAnimation(float duration)
         {
             var startScale = transform.localScale;

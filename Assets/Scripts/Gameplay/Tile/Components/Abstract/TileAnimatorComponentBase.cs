@@ -13,5 +13,6 @@ namespace Gameplay.Tile.Components.Abstract
         public abstract void PlayUnselectEffect();
         public abstract void AnimateDestruction();
         public abstract void AnimateMovement(Vector3 target, float duration);
+        public abstract void ResetState();
     }
 }
