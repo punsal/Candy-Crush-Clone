@@ -1,181 +1,114 @@
 # Grid System
 
-A grid-based system for managing **cells** and their **occupants** in a 2D Unity game.  
-Interface-driven design makes it flexible, testable, and easy to extend.
+A high-performance, interface-driven grid system for managing cells and their occupants.
+
+To support the project's **<2ms logic budget**, this system uses internal **O(1) lookup maps** for spatial queries instead of iterative searches.
 
 ---
 
 ## Folder Structure
 
-- **Abstract/**
-  - `GridSystemBase.cs` – Abstract grid management logic
-- **Cell/**
-  - **Abstract/**
-    - `CellBase.cs` – Base MonoBehaviour cell with position and lifecycle
-  - **Interface/**
-    - `ICell.cs` – Core cell contract
-  - `GridCell.cs` – Concrete visual cell
-- **Interface/**
-  - `ICellOccupant.cs` – Contract for objects that occupy cells
-- `GridSystem.cs` – Concrete grid implementation
+-   **Abstract/**
+  -   `GridSystemBase.cs` – Core logic (Validation, Lookup maps).
+-   **Cell/**
+  -   `CellBase.cs` / `GridCell.cs` – Visual representation of cells.
+  -   `ICell.cs` – Pure data contract (Coordinates).
+-   **Interface/**
+  -   `ICellOccupant.cs` – Contract for objects on the grid (Tiles).
+-   `GridSystem.cs` – Concrete spawner/manager.
 
 ---
 
-## Core Concepts
+## Key Performance Architecture
+
+### 1. O(1) Spatial Lookups
+Previously, `GetCellOccupant` required iterating a list of all active objects (O(N)).
+**Current Implementation:**
+-   `GridSystemBase` maintains a private `ICellOccupant[,] _occupantMap`.
+-   **`GetCellOccupant(cell)`**: Returns `_occupantMap[row, col]` instantly.
+-   **`TryGetEmptyCell`**: Scans the array directly without allocation.
+
+### 2. Strict Sync Contract
+Because the Grid System owns the "Truth" of where things are, occupants must be removed correctly:
+
+1.  **Remove from Grid**: Call `GridSystem.RemoveOccupant(occupant)`.
+  -   The system uses `occupant.Cell` to clear the O(1) map entry.
+2.  **Release Cell**: Call `occupant.Release()`.
+  -   The occupant forgets its cell.
+
+*If you Release() before Removing, the GridSystem falls back to a slower O(N) scan to find and clear the ghost reference.*
+
+---
+
+## Core Interfaces
 
 ### ICell
-Contract for all grid cells.
-
-**Properties**
-- `Name` – Safe identifier (empty if destroyed)
-- `Row`, `Column` – Grid coordinates
-- `Position` – World position (`Vector3`)
-
-**Methods**
-- `Initialize(row, column)`
-- `Destroy()`
-- `Highlight()`
-- `Conceal()`
-
-Use `ICell` to write grid logic that doesn’t depend on concrete MonoBehaviours.
-
----
-
-### CellBase & GridCell
-
-**CellBase**
-- Abstract MonoBehaviour implementing `ICell`
-- Tracks destruction state
-- Provides:
-  ```csharp
-  Awake → OnAwake() (abstract hook)
-  Initialize(row, column)
-  Destroy()
-  ```
-
-**GridCell**
-- Inherits `CellBase`
-- Uses a `SpriteRenderer` for visual feedback:
-  ```csharp
-  [Header("Visuals")]
-  [SerializeField] private SpriteRenderer visual;
-
-  [Header("VFX")]
-  [SerializeField] private Color highlightColor = Color.green;
-  ```
-- `Highlight()` → sets `visual.color` to `highlightColor`
-- `Conceal()` → sets `visual.color` to `Color.white`
-
----
+Pure data container. Does **not** know about its occupant (separation of concerns).
+-   `Row`, `Column`: Immutable coordinates.
+-   `Position`: World space vector.
 
 ### ICellOccupant
-
-Represents anything that can sit on a cell (chips, pieces, etc.).
-
-**Contract**
-- `ICell Cell { get; }`
-- `void Occupy(ICell cell)`
-- `void Release()`
-
-Typical lifecycle:
-```
-csharp
-occupant.Occupy(cell);
-grid.AddOccupant(occupant);
-
-// ...
-
-occupant.Release();
-grid.RemoveOccupant(occupant);
-```
----
-
-### GridSystemBase & GridSystem
-
-**GridSystemBase**
-- Manages a 2D array of `ICell` and a list of occupants.
-
-**Key Members**
-- `int RowCount`, `int ColumnCount`
-- `ICell GetCellAt(int row, int column)`
-- `bool TryGetEmptyCell(out ICell cell)`
-- `void AddOccupant(ICellOccupant occupant)`
-- `void RemoveOccupant(ICellOccupant occupant)`
-- `void Initialize()` / `void Dispose()` (abstract)
-
-Uses a `HashSet` internally to quickly find empty cells and validates:
-- Null occupants
-- Duplicate occupants
-- Cell ownership (cell must belong to this grid)
-- `Release()` must be called before `RemoveOccupant()`
-
-**GridSystem**
-- Concrete grid using a `CellBase` prefab.
-
-Constructor:
-```
-csharp
-public GridSystem(int rowCount, int columnCount, CellBase cellPrefab)
-```
-Initialization:
-```
-csharp
-for (int row = 0; row < RowCount; row++)
-{
-    for (int col = 0; col < ColumnCount; col++)
-    {
-        ICell cell = Object.Instantiate(_cellPrefab, new Vector3(col, -row, 0), Quaternion.identity);
-        cell.Initialize(row, col);
-        Cells[row, col] = cell;
-    }
-}
-```
-Disposal iterates all cells and calls `Destroy()`.
+An object that sits on the grid.
+-   `ICell Cell { get; }`: The cell it thinks it occupies.
+-   `Occupy(cell)` / `Release()`: Updates internal state.
 
 ---
 
-## Basic Usage
+## GridSystemBase API
 
-### Creating and Using a Grid
+```csharp
+// Initialization
+void Initialize();
+void Dispose();
+
+// Queries (All O(1))
+ICell GetCellAt(int row, int column);
+ICellOccupant GetCellOccupant(ICell cell);
+bool TryGetEmptyCell(out ICell cell);
+
+// Management
+void AddOccupant(ICellOccupant occupant);
+void RemoveOccupant(ICellOccupant occupant);
 ```
-csharp
-// Create and initialize grid
-var cellPrefab = Resources.Load<GridCell>("Prefabs/GridCell");
-var grid = new GridSystem(rowCount: 8, columnCount: 8, cellPrefab);
+
+---
+
+## Usage Example
+
+### Initialization
+```csharp
+var grid = new GridSystem(6, 6, cellPrefab);
 grid.Initialize();
+```
 
-// Access and highlight a cell
-var cell = grid.GetCellAt(row: 3, column: 5);
-if (cell != null)
+### Adding an Occupant
+```csharp
+var tile = _pool.Spawn(prefab, ...);
+var cell = grid.GetCellAt(0, 0);
+
+tile.Occupy(cell);       // Tile knows it is at (0,0)
+grid.AddOccupant(tile);  // Grid maps (0,0) -> Tile
+```
+
+### Moving an Occupant (Teleport)
+```csharp
+// 1. Remove from old pos
+grid.RemoveOccupant(tile);
+tile.Release();
+
+// 2. Add to new pos
+tile.Occupy(newCell);
+grid.AddOccupant(tile);
+```
+
+### Querying
+```csharp
+// Fast check: Is there something at (2, 3)?
+var cell = grid.GetCellAt(2, 3);
+var occupant = grid.GetCellOccupant(cell); // Instant array access
+
+if (occupant is TileBase tile)
 {
-    cell.Highlight();
+    // Found it!
 }
 ```
-### Placing an Occupant
-```
-csharp
-if (grid.TryGetEmptyCell(out var cell))
-{
-    occupant.Occupy(cell);
-    grid.AddOccupant(occupant);
-
-    cell.Highlight();
-}
-```
-### Cleanup
-```
-csharp
-grid.Dispose(); // Destroys all cell GameObjects
-```
----
-
-## Design Highlights
-
-- **Interfaces first**: `ICell` and `ICellOccupant` decouple logic from Unity components.
-- **Template pattern**: `GridSystemBase` / `GridSystem`, `CellBase` / `GridCell`.
-- **Safety**:
-    - Bounds checks in `GetCellAt`
-    - Enforced `Release()` before `RemoveOccupant()`
-    - Destruction state tracking in `CellBase`
-- **Testability**:
-    - You can mock `ICell` and `ICellOccupant` in pure C# tests.

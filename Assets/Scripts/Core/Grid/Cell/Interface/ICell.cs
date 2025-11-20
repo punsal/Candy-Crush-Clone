@@ -13,7 +13,7 @@ namespace Core.Grid.Cell.Interface
     /// </remarks>
     public interface ICell
     {
-        string Name { get; }
+        string Name { get; set; }
         int Row { get; }
         int Column { get; }
         Vector3 Position { get; }

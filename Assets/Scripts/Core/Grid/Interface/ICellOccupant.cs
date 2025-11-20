@@ -7,6 +7,7 @@ namespace Core.Grid.Interface
     /// </summary>
     public interface ICellOccupant
     {
+        string Name { get; }
         ICell Cell { get; }
         void Occupy(ICell cell);
         void Release();

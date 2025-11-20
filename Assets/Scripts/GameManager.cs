@@ -7,6 +7,10 @@ using Core.Camera.Provider.Abstract;
 using Core.Grid;
 using Core.Grid.Abstract;
 using Core.Grid.Cell.Abstract;
+using Core.Pool;
+using Core.Pool.Abstract;
+using Core.Random;
+using Core.Random.Abstract;
 using Core.Runner.Interface;
 using Core.Select;
 using Core.Select.Abstract;
@@ -23,16 +27,22 @@ using Gameplay.Systems.Swap;
 using Gameplay.Systems.Swap.Abstract;
 using Gameplay.Tile;
 using Gameplay.Tile.Abstract;
+using Unity.Profiling;
 using UnityEngine;
 
 public class GameManager : MonoBehaviour, ICoroutineRunner
 {
+    private static readonly ProfilerMarker SwapCompletedMarker = new("GameManager.HandleSwapCompleted");
+    
+    [Header("Random")]
+    [SerializeField] private int seed = 0;
+    [SerializeField, Tooltip("After shuffle fails, should increase the seed for new random range")]
+    private bool shouldIncreaseSeed = true;
+    
     [Header("Camera")]
     [SerializeField] private UnityCameraProviderBase gameCameraProvider;
     
     [Header("Grid")]
-    [SerializeField, Range(4, 12)] private int rowCount = 8;
-    [SerializeField, Range(4, 12)] private int columnCount = 8;
     [SerializeField] private CellBase gridCellPrefab;
     
     [Header("Chip")]
@@ -45,6 +55,8 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
     [Header("System Configuration")]
     [SerializeField, Range(2, 5)] private int shuffleCountBeforeFailure = 2;
 
+    private RandomSystemBase _randomSystem;
+    private PoolSystemBase _poolSystem;
     private CameraSystemBase _cameraSystem;
     private GridSystemBase _gridSystem;
     private SelectSystemBase _selectSystem;
@@ -56,6 +68,8 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
     private InputHandlerBase _inputHandler;
     
     private int _currentShuffleCount;
+    private const int RowCount = 6;
+    private const int ColumnCount = 6;
     
     private void Awake()
     {
@@ -85,6 +99,8 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
 
     private void CreateSystems()
     {
+        CreateRandomSystem();
+        CreatePoolSystem();
         CreateGameCameraSystem();
         CreateGridSystem();
         CreateLinkSystem();
@@ -101,8 +117,9 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         _currentShuffleCount = 0;
         
         _gridSystem.Initialize();
+        _tileManager.Initialize();
         _tileManager.FillGrid();
-        _cameraSystem.CenterOnGrid(rowCount, columnCount);
+        _cameraSystem.CenterOnGrid(RowCount, ColumnCount);
 
         // 1) If there is any existing match on the freshly filled grid, shuffle first.
         if (_matchDetectionSystem.TryGetMatch(out _))
@@ -132,6 +149,7 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         _tileManager.Dispose();
         _selectSystem.Dispose();
         _gridSystem.Dispose();
+        _poolSystem.Dispose();
     }
 
     private void SubscribeToEvents()
@@ -150,6 +168,16 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         _swapSystem.OnRevertCompleted -= HandleRevertCompleted;
         _boardRefillSystem.OnRefillCompleted -= HandleRefillCompleted;
         _shuffleSystem.OnShuffleCompleted -= HandleShuffleCompleted;
+    }
+
+    private void CreateRandomSystem()
+    {
+        _randomSystem = new RandomSystem(seed);
+    }
+    
+    private void CreatePoolSystem()
+    {
+        _poolSystem = new PoolSystem();
     }
 
     private void CreateGameCameraSystem()
@@ -180,7 +208,7 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         {
             Debug.LogError("Tile prefab is null");
         }
-        _gridSystem = new GridSystem(rowCount, columnCount, gridCellPrefab);
+        _gridSystem = new GridSystem(RowCount, ColumnCount, gridCellPrefab);
     }
 
     private void CreateLinkSystem()
@@ -211,7 +239,7 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         {
             Debug.LogError("No chip prefabs found");
         }
-        _tileManager = new TileManager(_gridSystem, tilePrefabs);
+        _tileManager = new TileManager(_randomSystem, _gridSystem, tilePrefabs, _poolSystem);
     }
 
     private void CreateBoardRefillSystem()
@@ -226,7 +254,7 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
 
     private void CreateShuffleSystem()
     {
-        _shuffleSystem = new ShuffleSystem(_gridSystem, _tileManager, this);
+        _shuffleSystem = new ShuffleSystem(_gridSystem, _tileManager, this, _randomSystem);
     }
 
     private void CreateSwapSystem()
@@ -262,6 +290,7 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
 
     private void HandleSwapCompleted(TileBase tile1, TileBase tile2)
     {
+        SwapCompletedMarker.Begin();
         Debug.Log($"Swap completed: {tile1.Name} -> {tile2.Name}");
         
         // check if any match
@@ -270,11 +299,15 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
             Debug.Log($"Match found: {string.Join(", ", matchTiles.Select(c => c.name))}");
             // Start destruction and refill sequence
             _boardRefillSystem.StartRefill(matchTiles);
+            
+            SwapCompletedMarker.End();
             return;
         }
         
         Debug.Log("No match found, reverting swaps");
         _swapSystem.StartRevert(tile1, tile2);
+        
+        SwapCompletedMarker.End();
     }
 
     private void HandleRevertCompleted()
@@ -319,6 +352,21 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         _currentShuffleCount++;
         Debug.Log($"Current shuffle count: {_currentShuffleCount}");
         
+        // If there is any existing match on the freshly filled grid, shuffle again.
+        if (_matchDetectionSystem.TryGetMatch(out _))
+        {
+            if (CanShuffle())
+            {
+                Debug.Log("Initial match detected, starting shuffle");
+                _shuffleSystem.StartShuffle();
+                return;
+            }
+            
+            Debug.Log("Initial match detected but shuffle failed. No more shuffle attempts, restarting game.");
+            Replay();
+            return;
+        }
+        
         if (!_matchDetectionSystem.HasPossibleMoves())
         {
             if (_currentShuffleCount < shuffleCountBeforeFailure)
@@ -337,11 +385,28 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         _inputHandler.Enable();
     }
 
+    private bool CanShuffle()
+    {
+        if (_currentShuffleCount >= shuffleCountBeforeFailure)
+        {
+            Debug.Log("No more shuffle.");
+            return false;
+        }
+            
+        Debug.Log("Can shuffle.");
+        return true;
+    }
+
     private void Replay()
     {
         Debug.Log("Stopping current game, destroying systems");
         UnsubscribeFromEvents();
         DestroySystems();
+
+        if (shouldIncreaseSeed)
+        {
+            seed++;
+        }
         
         Debug.Log("Starting next game");
         CreateSystems();
@@ -362,7 +427,7 @@ public class GameManager : MonoBehaviour, ICoroutineRunner
         Debug.Log($"Total in list: {activeTiles.Count}");
         Debug.Log($"Non-null: {nonNullTiles.Count}");
         Debug.Log($"With tiles: {withTiles.Count}");
-        Debug.Log($"Expected: {rowCount * columnCount}");
+        Debug.Log($"Expected: {RowCount * ColumnCount}");
     
         // Check for duplicates
         var duplicates = withTiles

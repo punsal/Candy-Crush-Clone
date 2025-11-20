@@ -3,8 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Core.Grid.Abstract;
 using Core.Grid.Cell.Interface;
+using Core.Pool.Interface;
+using Core.Random.Abstract;
 using UnityEngine;
-using Random = UnityEngine.Random;
 
 namespace Gameplay.Tile.Abstract
 {
@@ -15,12 +16,16 @@ namespace Gameplay.Tile.Abstract
     public abstract class TileManagerBase : IDisposable
     {
         protected readonly GridSystemBase GridSystem;
+        protected readonly IPoolSystem PoolSystem;
+        private readonly RandomSystemBase _randomSystem;
         private readonly List<TileBase> _tilePrefabs;
 
         public abstract IReadOnlyList<TileBase> ActiveTiles { get; }
 
-        protected TileManagerBase(GridSystemBase gridSystem, List<TileBase> tilePrefabs)
+        protected TileManagerBase(RandomSystemBase randomSystem, IPoolSystem poolSystem, GridSystemBase gridSystem, List<TileBase> tilePrefabs)
         {
+            _randomSystem = randomSystem;
+            PoolSystem = poolSystem;
             GridSystem = gridSystem;
             _tilePrefabs = tilePrefabs ?? new List<TileBase>();
         }
@@ -30,13 +35,26 @@ namespace Gameplay.Tile.Abstract
             DestroyAllTiles();
         }
 
+        public void Initialize()
+        {
+            if (_tilePrefabs == null)
+            {
+                Debug.LogError("No tile prefabs provided");
+                return;
+            }
+            foreach (var tilePrefab in _tilePrefabs)
+            {
+                PoolSystem.Prewarm(tilePrefab, 10);
+            }
+        }
+
         // Spawning
         public abstract void FillGrid();
         protected abstract TileBase SpawnTileAt(ICell cell, TileBase tilePrefab);
-        public void SpawnRandomTileAt(ICell cell)
+        public TileBase SpawnRandomTileAt(ICell cell)
         {
-            var randomPrefab = _tilePrefabs[Random.Range(0, _tilePrefabs.Count)];
-            SpawnTileAt(cell, randomPrefab);
+            var randomPrefab = _tilePrefabs[_randomSystem.Next(0, _tilePrefabs.Count)];
+            return SpawnTileAt(cell, randomPrefab);
         }
 
         // Destruction
@@ -61,27 +79,10 @@ namespace Gameplay.Tile.Abstract
         // Queries
         public TileBase FindTileAt(int row, int col)
         {
-            TileBase foundTile = null;
-            var foundCount = 0;
-            
-            // Don't use LINQ here, it's too slow
-            // ReSharper disable once LoopCanBeConvertedToQuery
-            foreach (var tile in ActiveTiles)
-            {
-                if (!tile || tile.Cell == null || tile.Cell.Row != row || tile.Cell.Column != col)
-                {
-                    continue;
-                }
-                foundTile = tile;
-                foundCount++;
-            }
-            
-            if (foundCount > 1)
-            {
-                Debug.LogError($"Multiple tiles ({foundCount}) found at ({row}, {col})!");
-            }
-
-            return foundTile;
+            var cell = GridSystem.GetCellAt(row, col);
+            if (cell == null) return null;
+    
+            return GridSystem.GetCellOccupant(cell) as TileBase;
         }
     }
 }

@@ -17,14 +17,18 @@ namespace Core.Grid.Abstract
         public int RowCount { get; }
         public int ColumnCount { get; }
         protected ICell[,] Cells { get; }
-        private readonly List<ICellOccupant> _occupants;
-
+        
+        private readonly ICellOccupant[,] _occupantMap;
+        private readonly HashSet<ICellOccupant> _occupants; 
+        
         protected GridSystemBase(int rowCount, int columnCount)
         {
             RowCount = rowCount;
             ColumnCount = columnCount;
             Cells = new ICell[rowCount, columnCount];
-            _occupants = new List<ICellOccupant>();
+            
+            _occupantMap = new ICellOccupant[rowCount, columnCount];
+            _occupants = new HashSet<ICellOccupant>();
         }
 
         public abstract void Initialize();
@@ -44,25 +48,17 @@ namespace Core.Grid.Abstract
         public bool TryGetEmptyCell(out ICell cell)
         {
             cell = null;
-    
-            // Use HashSet for O(1) lookup instead of O(n) Contains
-            var occupiedCells = new HashSet<ICell>(
-                _occupants
-                    .Select(occupant => occupant.Cell)
-                    .Where(t => t != null)
-            );
 
             // Find the first empty tile without creating a full list
             for (var i = 0; i < RowCount; i++)
             {
                 for (var j = 0; j < ColumnCount; j++)
                 {
-                    var currentCell = Cells[i, j];
-                    if (currentCell == null || occupiedCells.Contains(currentCell))
+                    if (_occupantMap[i, j] != null)
                     {
                         continue;
                     }
-                    cell = currentCell;
+                    cell = Cells[i, j];
                     return true;
                 }
             }
@@ -97,6 +93,7 @@ namespace Core.Grid.Abstract
                 return;
             }
 
+            _occupantMap[occupant.Cell.Row, occupant.Cell.Column] = occupant;
             _occupants.Add(occupant);
         }
         
@@ -109,28 +106,52 @@ namespace Core.Grid.Abstract
             return Cells[cell.Row, cell.Column] == cell;
         }
 
+        public ICellOccupant GetCellOccupant(ICell cell)
+        {
+            return cell == null 
+                ? null 
+                : _occupantMap[cell.Row, cell.Column];
+        }
+
         public void RemoveOccupant(ICellOccupant occupant)
         {
-            if (occupant == null)
+            if (occupant == null) return;
+
+            // if the cell is known, clear the map directly
+            if (occupant.Cell != null)
             {
-                Debug.LogError("Occupant cannot be null");
-                return;
+                var r = occupant.Cell.Row;
+                var c = occupant.Cell.Column;
+                if (r >= 0 && r < RowCount && c >= 0 && c < ColumnCount)
+                {
+                    if (_occupantMap[r, c] == occupant)
+                    {
+                        _occupantMap[r, c] = null;
+                    }
+                }
+            }
+            // if the cell is released, find and clear from the map
+            else 
+            {
+                ClearOccupantFromMap(occupant);
             }
 
-            if (!_occupants.Contains(occupant))
-            {
-                Debug.LogWarning("Occupant does not exist");
-                return;
-            }
+            _occupants.Remove(occupant);
+        }
 
-            // Fixed: occupant should have released its cell before removal
-            if (occupant.Cell == null)
+        private void ClearOccupantFromMap(ICellOccupant occupant)
+        {
+            for (var r = 0; r < RowCount; r++)
             {
-                _occupants.Remove(occupant);
-            }
-            else
-            {
-                Debug.LogError($"Occupant still has a cell at ({occupant.Cell.Row}, {occupant.Cell.Column}). Call Release() first.");
+                for (var c = 0; c < ColumnCount; c++)
+                {
+                    if (_occupantMap[r, c] != occupant)
+                    {
+                        continue;
+                    }
+                    _occupantMap[r, c] = null;
+                    return;
+                }
             }
         }
     }

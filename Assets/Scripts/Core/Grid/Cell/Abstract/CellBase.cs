@@ -14,7 +14,12 @@ namespace Core.Grid.Cell.Abstract
     /// </remarks>
     public abstract class CellBase : MonoBehaviour, ICell
     {
-        public string Name => _isDestroyed ? string.Empty : name;
+        public string Name
+        {
+            get => _isDestroyed ? string.Empty : name;
+            set => name = value;
+        }
+
         public int Row { get; private set; }
         public int Column { get; private set; }
 

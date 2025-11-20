@@ -9,7 +9,6 @@ namespace Core.Select.Interface
     /// </summary>
     public interface ISelectable : ICellOccupant
     {
-        string Name { get; }
         void Select();
         void Unselect();
         bool IsAdjacent(ISelectable other);

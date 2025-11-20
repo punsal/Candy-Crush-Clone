@@ -1,7 +1,8 @@
 using System.Collections.Generic;
-using System.Linq;
 using Core.Grid.Abstract;
 using Core.Grid.Cell.Interface;
+using Core.Pool.Interface;
+using Core.Random.Abstract;
 using Gameplay.Tile.Abstract;
 using UnityEngine;
 
@@ -16,9 +17,20 @@ namespace Gameplay.Tile
 
         public override IReadOnlyList<TileBase> ActiveTiles => _activeTiles;
 
-        public TileManager(GridSystemBase gridSystem, List<TileBase> tilePrefabs) : base(gridSystem, tilePrefabs)
+        public TileManager(
+            RandomSystemBase randomSystemBase,
+            GridSystemBase gridSystem,
+            List<TileBase> tilePrefabs,
+            IPoolSystem poolSystem) 
+            : base(randomSystemBase, poolSystem, gridSystem, tilePrefabs)
         {
-            _activeTiles = new List<TileBase>();
+            _activeTiles = new List<TileBase>(gridSystem.RowCount * gridSystem.ColumnCount);
+            PreparePool();
+        }
+
+        private void PreparePool()
+        {
+            
         }
 
         public override void FillGrid()
@@ -31,27 +43,13 @@ namespace Gameplay.Tile
 
         protected override TileBase SpawnTileAt(ICell cell, TileBase tilePrefab)
         {
-            var existingTile = _activeTiles.FirstOrDefault(c => c != null && c.Cell == cell);
-            if (existingTile != null)
-            {
-                Debug.LogError($"Tile at ({cell.Row}, {cell.Column}) is already occupied by {existingTile.name}!");
-                return existingTile;
-            }
+            var tile = PoolSystem.Spawn(tilePrefab, cell.Position, Quaternion.identity);
+            tile.ResetState();
             
-            var spawnPosition = new Vector3(
-                cell.Position.x, 
-                cell.Position.y + GridSystem.RowCount, 
-                0);
-            
-            var tile = Object.Instantiate(tilePrefab, spawnPosition, Quaternion.identity);
             tile.name = $"Tile_{cell.Row}_{cell.Column}";
-
             tile.Occupy(cell);
             GridSystem.AddOccupant(tile);
             _activeTiles.Add(tile);
-            Debug.Log($"Spawned tile at ({cell.Row}, {cell.Column}). Total active: {_activeTiles.Count}");
-
-            tile.MoveTo(cell.Position, 0.2f);
             
             return tile;
         }
@@ -60,18 +58,18 @@ namespace Gameplay.Tile
         {
             if (tile == null)
             {
-                Debug.LogWarning("Cannot destroy null tile");
                 return;
             }
-
-            Debug.Log($"Destroying tile {tile.name} at ({tile.Cell?.Row}, {tile.Cell?.Column}). Before: {_activeTiles.Count}");
             
             _activeTiles.Remove(tile);
-            tile.Release();
-            GridSystem.RemoveOccupant(tile);
-            Object.Destroy(tile.gameObject);
             
-            Debug.Log($"After destroy: {_activeTiles.Count}");
+            if (tile.Cell != null)
+            {
+                GridSystem.RemoveOccupant(tile);
+                tile.Release();
+            }
+            
+            PoolSystem.Despawn(tile);
         }
 
         protected override void DestroyAllTiles()
@@ -87,7 +85,7 @@ namespace Gameplay.Tile
 
                 tile.Release();
                 GridSystem.RemoveOccupant(tile);
-                Object.Destroy(tile.gameObject);
+                PoolSystem.Despawn(tile);
             }
 
             _activeTiles.Clear();
@@ -95,13 +93,7 @@ namespace Gameplay.Tile
 
         protected override void CleanupDestroyedTiles()
         {
-            var nullCount = _activeTiles.RemoveAll(tile => tile == null);
-            if (nullCount > 0)
-            {
-                Debug.LogWarning($"Cleaned up {nullCount} null references");
-            }
-            
-            Debug.Log($"After cleanup: {_activeTiles.Count} active tiles");
+            _activeTiles.RemoveAll(tile => tile == null);
         }
     }
 }
