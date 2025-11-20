@@ -350,9 +350,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1ac3892d3f11f487fb8cba2aaf7d710f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  seed: 1234
   gameCameraProvider: {fileID: 1714347250}
-  rowCount: 6
-  columnCount: 6
   gridCellPrefab: {fileID: 3732433780437528533, guid: b694ae9de31f24bb0969f6b1f84996c2, type: 3}
   tilePrefabs:
   - {fileID: 5180825557908069876, guid: 87e8c3031508e491f98be2a507c58928, type: 3}
