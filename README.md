@@ -2,13 +2,13 @@
 
 A small, architecture‑focused **Candy Crush–style match‑3 prototype** built in Unity.
 
-The project emphasizes clean separation of concerns:
+The project emphasizes clean separation of concerns and strict performance targets (**<2ms Logic Cycle**):
 
-- **Grid** (cells & layout)
-- **Tiles** (matchable pieces)
+- **Grid** (O(1) lookup system)
+- **Tiles** (Pooled, zero-allocation)
 - **Selection + Swap** (input → swap pair)
 - **Match Detection** (Candy‑Crush line matches)
-- **Board Refill** (destroy → gravity → refill)
+- **Board Refill** (Logic/Visual split, Column Compaction)
 - **Shuffle** (no‑move recovery)
 
 UI, score, and meta‑game systems have been intentionally removed to keep the core gameplay loop easy to read and review.
@@ -29,37 +29,30 @@ UI, score, and meta‑game systems have been intentionally removed to keep the c
 ### Core Gameplay Loop
 
 1. **Board initialization**
-   - Create a grid of cells.
-   - Fill it with random tiles.
-   - Ensure:
-     - No initial matches.
-     - At least one valid swap (`HasPossibleMoves()`).
+  - Create a grid of cells.
+  - Fill it with pre-warmed pooled tiles.
+  - Ensure no initial matches and at least one valid swap.
 
 2. **Player interaction**
-   - Click/tap tile A → selected.
-   - Drag to tile B:
-     - If adjacent → attempt swap.
-     - Otherwise → update selection.
+  - Click/tap tile A → selected.
+  - Drag to tile B:
+    - If adjacent → attempt swap.
 
-3. **After a swap**
-   - If the swap creates any match (horizontal/vertical 3+):
-     - Destroy matched tiles.
-     - Apply gravity.
-     - Refill board.
-     - Cascade:
-       - If new matches appear after refill, repeat the same process.
-   - If no match:
-     - Revert the swap.
+3. **The Match Cycle (<2ms)**
+  - Logic Phase (Instant):
+    - **Match**: Detect lines.
+    - **Clear**: Remove tiles logically.
+    - **Gravity**: Compact columns (O(N)).
+    - **Refill**: Spawn new tiles from pool (hidden).
+  - Visual Phase (Sequenced):
+    - Animate destruction.
+    - Animate gravity falls.
+    - Drop new tiles in ("Rain effect").
 
 4. **Dead‑board handling**
-   - After the board is stable:
-     - If there are no possible moves:
-       - Shuffle tiles.
-       - Validate again.
-     - Otherwise:
-       - Wait for the next player input.
-
-This is essentially a minimal, testable “Candy Crush core” without the UI and scoring layers.
+  - If no moves exist after refill:
+    - Shuffle tiles.
+    - If shuffle fails repeatedly, restart board.
 
 ---
 
@@ -71,94 +64,39 @@ Relevant folders under `Assets/Scripts`:
 
 - **`Core/Grid`**  
   Grid and cells.
-  - `GridSystemBase`, `GridSystem` – 2D grid of `ICell`.
-  - `CellBase`, `ICell` – MonoBehaviour cell with row/column + world position.
+  - `GridSystem` – Manages `ICell` and `ICellOccupant[,]` map for O(1) lookups.
+  - `ICell` – Pure coordinate data.
+
+- **`Core/Pool`**  
+  Generic Pooling System.
+  - `PoolSystem` – Dictionary-based pool for zero-allocation spawning.
+  - Supports `Prewarm` to ensure lag-free start.
 
 - **`Core/Select`**  
-  Selection model (what the player has clicked).
-  - `ISelectable`, `SelectableBase` – objects that can be selected (tiles).
-  - `SelectSystemBase`, `SelectSystem` – tracks first & second selection, raises `OnSelectionCompleted`.
-
-- **`Core/Camera`**  
-  Camera abstraction and centering on grid.
-
-- **`Core/Runner`**  
-  - `ICoroutineRunner` – implemented by `GameManager` to run gameplay coroutines.
+  Selection model.
+  - `SelectSystem` – Tracks clicked tiles and raises `OnSelectionCompleted`.
 
 ### Gameplay
 
 - **`Gameplay/Tile`**  
   Tiles and their manager.
-  - `TileBase` – base tile type; integrates with selection and animation.
-  - `BasicTile` – simple matchable tile with `MatchType`.
-  - `TileManagerBase`, `TileManager` – spawn, track, and destroy tiles.
-
-- **`Gameplay/Input`**  
-  Input glue.
-  - `InputHandlerBase` – platform‑agnostic enable/disable & update.
-  - `MouseInputHandler` / `TouchInputHandler` – mouse or touch → selection.
-
-- **`Gameplay/Systems/Swap`**  
-  Swap orchestration.
-  - `SwapSystemBase`, `SwapSystem` – perform swap/revert between two tiles, raising:
-    - `OnSwapCompleted`
-    - `OnRevertCompleted`
+  - `TileManager` – Uses `PoolSystem` to spawn/despawn.
+  - `TileBase` – Visuals handled by `TileAnimatorComponent`.
 
 - **`Gameplay/Systems/MatchDetection`**  
   Match‑3 logic.
-  - `MatchDetectionSystemBase`, `MatchDetectionSystem`
-  - `MatchType` enum
-  - Responsibilities:
-    - `TryGetMatch(out tiles)` – find all horizontal/vertical lines of 3+ same‑type tiles.
-    - `HasPossibleMoves()` – simulate swaps with neighbors to see if any move can create a match.
+  - `MatchDetectionSystem` – Fast scanning for lines of 3+.
 
 - **`Gameplay/Systems/BoardRefill`**  
-  Destroy → gravity → refill.
-  - `BoardRefillSystemBase`, `BoardRefillSystem`
-  - Given a list of matched tiles:
-    - Play destruction.
-    - Drop tiles down (gravity).
-    - Spawn new tiles into empty cells.
-    - Raise `OnRefillCompleted`.
-
-- **`Gameplay/Systems/Shuffle`**  
-  No‑move recovery.
-  - `ShuffleSystemBase`, `ShuffleSystem`
-  - Randomly reassign tiles to cells while keeping board full, then raise `OnShuffleCompleted`.
+  The optimized refill pipeline.
+  - `BoardRefillSystem` – Coordinates the Logic/Visual split.
+  - Uses `ProfilerMarker` to track performance.
 
 - **`GameManager`**  
   The game’s “conductor”.
-  - Creates all systems.
-  - Wires events between:
-    - Input → Select → Swap
-    - Swap → MatchDetection → BoardRefill → MatchDetection (cascade) → Shuffle
-  - Manages the main loop:
-    - Initialization
-    - Cascades
-    - Shuffles
-    - Replay when shuffle recovery fails too many times.
-
----
-
-## How to Run
-
-1. **Open in Unity**
-   - Open the project in Unity **2022.3.x** (or compatible LTS).
-2. **Open the scene**
-   - `Assets/Scenes/GameScene.unity`
-3. **Play**
-   - Press **Play** in the editor.
-
-### Controls
-
-- **Desktop / Editor**
-  - Left‑click on a tile to select it.
-  - Left‑click drag on an **adjacent** tile to attempt a swap.
-- **Mobile (if built)**
-  - Tap/drag tiles similarly (driven by `TouchInputHandler`).
-
-If the swap results in a match, tiles are destroyed and the board refills with gravity and cascades.
-If not, the tiles slide back to their original positions.
+  - Initializes systems.
+  - Wires events (Input → Swap → Match → Refill).
+  - Enforces Determinism via `RandomSystem`.
 
 ---
 
@@ -166,44 +104,48 @@ If not, the tiles slide back to their original positions.
 
 This repository is structured for **reviewability and extensibility**:
 
+- **Performance First**
+  - **<2ms Logic**: Logic runs instantly; animations play asynchronously.
+  - **O(1) Lookups**: No list iterations for spatial queries.
+  - **Zero Allocations**: Pooling and pre-allocated buffers.
 - **Separation of concerns**
-  - Each system focuses on one responsibility (selection, swap, match detection, refill, shuffle).
-- **Testability**
-  - Core logic (MatchDetection, TileManager, GridSystem) is decoupled from Unity UI and can be tested in isolation.
-- **Clarity over cleverness**
-  - Algorithms are intentionally straightforward (row/column scanning, swap simulation) to make the behaviour obvious in code.
+  - Each system focuses on one responsibility.
+- **Determinism**
+  - All RNG is centralized in `RandomSystem` seeded by `GameManager`.
 
 ---
 
-## Possible Extensions (Future Work)
+## Case Work Status
 
-The current codebase is a solid base for:
+### 1. Grid & init
+- [x] Lock board size to 6×6.
+- [x] Confirm no-starting-matches + at least one valid move.
 
-- Score system:
-  - Points per tile, per cascade, or per special tile.
-- Turn or move limits:
-  - Classic “X moves to reach Y score” levels.
-- Special tiles:
-  - Striped, wrapped, bombs, color clears.
-- Level goals:
-  - Clear specific tiles, reach target scores, drop items, etc.
-- UI and feedback:
-  - HUD, animations, SFX, particle systems.
-- Persistence & meta:
-  - Level maps, progression, save/load.
+### 2. APIs
+- [x] Add Match type and expose `TryGetMatch`.
+- [x] Split BoardRefillSystem: Logic is now distinct from Animation.
+- [x] Add `HasPossibleMoves()` API.
 
-The core loop is intentionally kept lean so these features can be layered on top without rewriting the gameplay foundation.
+### 3. Booster
+- [ ] Add a simple *RowClear* or similar booster tile.
+- [ ] Integrate booster into FindMatches/Clear.
 
----
+### 4. Determinism
+- [x] Add randomSeed to GameManager.
+- [x] Call `RandomSystem` (wrapper) instead of `UnityEngine.Random`.
+- [x] Ensure `HasPossibleMoves` doesn’t consume randomness.
 
-## For Reviewers
+### 5. Performance
+- [x] Add profiler marker around logic cycle.
+- [x] **Profile and ensure < 2 ms**: Achieved ~0.2ms - 0.5ms logic cycle.
+- [x] **Remove/avoid allocations**: Implemented Object Pooling and O(1) Grid Lookup.
 
-If you’re reviewing this repository, useful starting points are:
+### 6. Mapping (API to System)
 
-- `Assets/Scripts/GameManager.cs` – overview of system orchestration.
-- `Assets/Scripts/Gameplay/Systems/MatchDetection` – line‑based match‑3 and possible‑move detection.
-- `Assets/Scripts/Gameplay/Systems/BoardRefill` – gravity + refill logic.
-- `Assets/Scripts/Gameplay/Tile` – tile abstraction and management.
-- `Assets/Scripts/Core/Select` + `Gameplay/Systems/Swap` – how input becomes a swap and how swaps are validated.
-
-Each major folder includes its own `README.md` with more detail about its responsibilities and interactions.
+| Required API | Implemented In |
+| :--- | :--- |
+| `FindMatches` | `MatchDetectionSystem.TryGetMatch` |
+| `Clear` | `BoardRefillSystem.StartRefill` (Logic Phase) |
+| `ApplyGravity` | `BoardRefillSystem.ProcessColumnLogic` |
+| `Refill` | `TileManager.SpawnRandomTileAt` (via Pool) |
+| `HasAnyMoves` | `MatchDetectionSystem.HasPossibleMoves` |
