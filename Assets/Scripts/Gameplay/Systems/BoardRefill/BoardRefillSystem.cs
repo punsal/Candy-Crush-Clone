@@ -4,6 +4,7 @@ using Core.Grid.Abstract;
 using Core.Runner.Interface;
 using Gameplay.Systems.BoardRefill.Abstract;
 using Gameplay.Tile.Abstract;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace Gameplay.Systems.BoardRefill
@@ -15,153 +16,149 @@ namespace Gameplay.Systems.BoardRefill
     /// </summary>
     public class BoardRefillSystem : BoardRefillSystemBase
     {
-        public BoardRefillSystem(GridSystemBase gridSystem, TileManagerBase tileManager, ICoroutineRunner coroutineRunner) : base(gridSystem, tileManager, coroutineRunner)
+        // ProfileMarkers for the LOGIC cycle (should be <2ms total)
+        private static readonly ProfilerMarker RefillLogicMarker = new("BoardRefill.LogicCycle");
+        private static readonly ProfilerMarker ProcessColumnMarker = new("BoardRefill.ProcessColumn");
+
+        private readonly List<TileBase> _movedTiles;
+        private readonly List<TileBase> _newlySpawnedTiles;
+
+
+        public BoardRefillSystem(GridSystemBase gridSystem, TileManagerBase tileManager,
+            ICoroutineRunner coroutineRunner) : base(gridSystem, tileManager, coroutineRunner)
         {
-            // empty
+            _movedTiles = new List<TileBase>(gridSystem.RowCount * gridSystem.ColumnCount);
+            _newlySpawnedTiles = new List<TileBase>(10);
         }
 
         protected override IEnumerator Refill(List<TileBase> tiles)
         {
-            yield return CoroutineRunner.StartCoroutine(DestroyChips(tiles));
-            yield return CoroutineRunner.StartCoroutine(ApplyGravity());
-            yield return CoroutineRunner.StartCoroutine(SpawnNewTiles());
-        }
-
-        private IEnumerator DestroyChips(List<TileBase> tiles)
-        {
-            // Visual effects
+            RefillLogicMarker.Begin();
+            
             // ReSharper disable once ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator
             foreach (var tile in tiles)
             {
-                if (tile)
+                if (!tile)
                 {
-                    tile.Destroy();
+                    continue;
                 }
+                tile.Release();
+                GridSystem.RemoveOccupant(tile);
             }
-        
-            // Wait for effects
-            yield return new WaitForSeconds(0.3f);
-        
-            // Actual destruction
-            TileManager.DestroyTiles(tiles);
-        
-            yield return null;
-        }
-
-        private IEnumerator ApplyGravity()
-        {
-            var columnCount = GridSystem.ColumnCount;
-            var rowCount = GridSystem.RowCount;
             
-            var anyTileMoved = false;
-        
-            // Process each column from left to right (col: 0 -> N)
+            _movedTiles.Clear();
+            _newlySpawnedTiles.Clear();
+            
+            var columnCount = GridSystem.ColumnCount;
             for (var col = 0; col < columnCount; col++)
             {
-                // Process from bottom to top (row: N -> 0)
-                for (var row = rowCount - 1; row >= 0; row--)
+                ProcessColumnLogic(col);
+            }
+            
+            RefillLogicMarker.End();
+            
+            yield return CoroutineRunner.StartCoroutine(AnimateRefill(tiles));
+        }
+        
+        private void ProcessColumnLogic(int col)
+        {
+            ProcessColumnMarker.Begin();
+            
+            var rowCount = GridSystem.RowCount;
+            var writeRow = rowCount - 1; // Start writing from the bottom
+
+            // Scan from bottom to top to find survivors
+            for (var readRow = rowCount - 1; readRow >= 0; readRow--)
+            {
+                var tile = TileManager.FindTileAt(readRow, col);
+
+                if (tile == null)
                 {
-                    var tileAtPosition = TileManager.FindTileAt(row, col);
-
-                    if (!tileAtPosition)
+                    continue;
+                }
+                if (readRow != writeRow)
+                {
+                    tile.Release();
+                    GridSystem.RemoveOccupant(tile);
+                        
+                    var targetCell = GridSystem.GetCellAt(writeRow, col);
+                    tile.Occupy(targetCell);
+                    GridSystem.AddOccupant(tile);
+                        
+                    _movedTiles.Add(tile);
+                }
+                    
+                writeRow--;
+            }
+            
+            // Any rows remaining above 'writeRow' (inclusive) are empty and need new tiles
+            for (var row = writeRow; row >= 0; row--)
+            {
+                var cell = GridSystem.GetCellAt(row, col);
+                var cellOccupant = GridSystem.GetCellOccupant(cell);
+                if (cell != null && cellOccupant != null)
+                {
+                    Debug.LogWarning($"Cell {cell.Name} is occupied by {cellOccupant.Name}");
+                    var ghostOccupant = cellOccupant as TileBase;
+                    if (ghostOccupant != null)
                     {
-                        continue;
+                        ghostOccupant.Release();
                     }
-                    var targetRow = FindLowestEmptyRow(row, col);
-
-                    if (targetRow == row)
-                    {
-                        continue;
-                    }
-                    yield return CoroutineRunner.StartCoroutine(MoveTileToCell(tileAtPosition, targetRow, col));
-                    anyTileMoved = true;
+                }
+                
+                var newTile = TileManager.SpawnRandomTileAt(cell);
+                
+                if (newTile != null)
+                {
+                    // track it for animation
+                    _newlySpawnedTiles.Add(newTile);
+                    newTile.gameObject.SetActive(false);
                 }
             }
+            
+            ProcessColumnMarker.End();
+        }
         
-            if (anyTileMoved)
+        private IEnumerator AnimateRefill(List<TileBase> destroyedTiles)
+        {
+            foreach (var tile in destroyedTiles)
+            {
+                if (tile) tile.Destroy();
+            }
+            
+            yield return new WaitForSeconds(0.2f);
+            
+            TileManager.DestroyTiles(destroyedTiles);
+            
+            var hasGravity = _movedTiles.Count > 0;
+            foreach (var tile in _movedTiles)
+            {
+                if (tile && tile.Cell != null)
+                {
+                    // Move visual transform to the logical cell position
+                    tile.MoveTo(tile.Cell.Position, 0.2f);
+                }
+            }
+
+            if (hasGravity)
             {
                 yield return new WaitForSeconds(0.2f);
             }
-        }
-        
-        private int FindLowestEmptyRow(int startRow, int col)
-        {
-            var rowCount = GridSystem.RowCount;
-            var lowestEmpty = startRow;
-        
-            // Check all rows below
-            for (var row = startRow + 1; row < rowCount; row++)
-            {
-                var tileBelow = TileManager.FindTileAt(row, col);
             
-                if (!tileBelow)
-                {
-                    lowestEmpty = row;
-                }
-                else
-                {
-                    break;
-                }
-            }
-        
-            return lowestEmpty;
-        }
-        
-        private IEnumerator MoveTileToCell(TileBase tile, int targetRow, int targetCol)
-        {
-            if (!tile || tile.Cell == null)
+            foreach (var tile in _newlySpawnedTiles)
             {
-                yield break;
+                if (tile && tile.Cell != null)
+                {
+                    tile.gameObject.SetActive(true);
+                    var finalPosition = tile.Cell.Position;
+                    tile.transform.position = finalPosition + Vector3.up * 5f;
+                    
+                    tile.MoveTo(tile.Cell.Position, 0.2f);
+                }
+                yield return new WaitForSeconds(0.05f);
             }
-        
-            var targetTile = GridSystem.GetCellAt(targetRow, targetCol);
-            if (targetTile == null)
-            {
-                yield break;
-            }
-        
-            tile.Release();
-            GridSystem.RemoveOccupant(tile);
-            
-            tile.MoveTo(targetTile.Position, 0.2f);
-        
-            tile.Occupy(targetTile);
-            GridSystem.AddOccupant(tile);
             
             yield return new WaitForSeconds(0.2f);
-        }
-
-        private IEnumerator SpawnNewTiles()
-        {
-            var columnCount = GridSystem.ColumnCount;
-            var rowCount = GridSystem.RowCount;
-            
-            // Fill from left to right (col: 0 -> N)
-            for (var col = 0; col < columnCount; col++)
-            {
-                // Fill from bottom to top (row: N -> 0)
-                for (var row = rowCount - 1; row >= 0; row--)
-                {
-                    var tileAtPosition = TileManager.FindTileAt(row, col);
-
-                    if (tileAtPosition)
-                    {
-                        continue;
-                    }
-                    var tile = GridSystem.GetCellAt(row, col);
-
-                    if (tile == null)
-                    {
-                        continue;
-                    }
-                    TileManager.SpawnRandomTileAt(tile);
-                        
-                    // Small delay for visual effect
-                    yield return new WaitForSeconds(0.05f);
-                }
-            }
-        
-            yield return new WaitForSeconds(0.1f);
         }
     }
 }
